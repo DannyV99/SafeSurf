@@ -1,39 +1,66 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>Interactive Terminal Room</title>
-  <style>
-    body { font-family: monospace; background: #111; color: #eee; display: flex; justify-content: center; align-items: center; height: 100vh; margin:0; }
-    .card { width: 90%; max-width: 600px; background: #222; padding: 20px; border-radius: 12px; }
-    .terminal { background: #000; padding: 10px; height: 200px; overflow-y: auto; border-radius: 8px; margin-bottom: 12px; }
-    input, textarea, button { font: inherit; margin-top: 6px; }
-    input { width: 100%; padding: 6px; border-radius: 4px; border: none; background: #333; color: #eee; }
-    textarea { width: 100%; height: 80px; padding: 6px; background: #111; color: #0f0; border-radius: 4px; }
-    button { padding: 8px 12px; border: none; background: #0f62fe; color: #fff; border-radius: 4px; cursor: pointer; }
-    button:disabled { opacity:.5; }
-    .results { background:#013220; padding:10px; border-radius:6px; margin-top:10px; }
-  </style>
+<meta charset="utf-8" />
+<title>Terminal + Mail Game</title>
+<style>
+body { font-family: monospace; background:#111; color:#eee; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; }
+.card { width:90%; max-width:600px; background:#222; padding:20px; border-radius:12px; }
+.hidden { display:none; }
+.terminal, .mail-content { background:#000; padding:10px; height:200px; overflow-y:auto; border-radius:8px; margin-bottom:12px; }
+input, textarea, button { font:inherit; margin-top:6px; }
+input { width:100%; padding:6px; border-radius:4px; border:none; background:#333; color:#eee; }
+textarea { width:100%; height:80px; padding:6px; border-radius:4px; background:#111; color:#0f0; border:none; }
+button { padding:8px 12px; border:none; background:#0f62fe; color:#fff; border-radius:4px; cursor:pointer; }
+button:disabled { opacity:.5; }
+.results { background:#013220; padding:10px; border-radius:6px; margin-top:10px; }
+.mailbox { display:flex; gap:10px; margin-top:10px; }
+.list { flex:1; background:#000; padding:10px; border-radius:8px; height:200px; overflow-y:auto; }
+.list div { padding:6px; border-bottom:1px solid #333; cursor:pointer; }
+.list div:hover { background:#333; }
+.content { flex:2; background:#000; padding:10px; border-radius:8px; height:200px; overflow-y:auto; }
+.tabs { display:flex; gap:10px; margin-bottom:10px; }
+</style>
 </head>
 <body>
 <div class="card">
   <div id="joinView">
     <p>Enter Room Code:</p>
-    <input id="room" placeholder="ABCD"/>
+    <input id="room" placeholder="ROOM01"/>
     <button id="joinBtn">Join</button>
     <div id="err" style="color:red"></div>
   </div>
 
-  <div id="gameView" style="display:none">
+  <div id="gameView" class="hidden">
     <p>People in room: <span id="count">1</span>/2</p>
-    <div class="terminal" id="terminal"></div>
-    <input id="cmd" placeholder="Type a command (ls, cd, cat)" disabled />
-    <div id="answerBox" style="display:none">
-      <p>Paste file contents here:</p>
-      <textarea id="answer"></textarea>
-      <button id="sendBtn">Submit Answer</button>
+    <div class="tabs">
+      <button id="tabTerminal">Terminal Room</button>
+      <button id="tabMail">Mail Room</button>
     </div>
-    <div id="results" class="results" style="display:none"></div>
+
+    <!-- Terminal -->
+    <div id="terminalRoom">
+      <div class="terminal" id="terminal"></div>
+      <input id="cmd" placeholder="Type command (ls, cd, cat)" disabled/>
+      <div id="answerBoxTerminal" class="hidden">
+        <textarea id="answerTerminal"></textarea>
+        <button id="sendBtnTerminal">Submit</button>
+      </div>
+      <div id="resultsTerminal" class="results hidden"></div>
+    </div>
+
+    <!-- Mail -->
+    <div id="mailRoom" class="hidden">
+      <div class="mailbox">
+        <div class="list" id="mailList"></div>
+        <div class="content" id="mailContent">Select an email to read...</div>
+      </div>
+      <div id="answerBoxMail" class="hidden">
+        <textarea id="answerMail"></textarea>
+        <button id="sendBtnMail">Submit</button>
+      </div>
+      <div id="resultsMail" class="results hidden"></div>
+    </div>
   </div>
 </div>
 
@@ -41,67 +68,90 @@
 <script>
 const socket = io();
 
-// Fake file system
-const fs = {
-  "/": ["home", "etc", "secret.txt"],
-  "/home": ["notes.md", "tasks.txt"],
-  "/etc": ["config.ini"],
-};
-const fileContents = {
-  "secret.txt": "FLAG{winner_found}",
-  "notes.md": "Groceries list...",
-  "tasks.txt": "Do laundry",
-  "config.ini": "setting=value"
-};
-let cwd = "/";
+// Tabs
+const terminalRoom = document.getElementById("terminalRoom");
+const mailRoom = document.getElementById("mailRoom");
+document.getElementById("tabTerminal").onclick = ()=>{ terminalRoom.classList.remove("hidden"); mailRoom.classList.add("hidden"); };
+document.getElementById("tabMail").onclick = ()=>{ terminalRoom.classList.add("hidden"); mailRoom.classList.remove("hidden"); };
 
-// helpers
-function log(msg){ terminal.innerHTML += msg + "<br>"; terminal.scrollTop = terminal.scrollHeight; }
-function runCommand(cmd){
-  const parts = cmd.trim().split(" ");
-  if(parts[0]==="ls"){
-    log(fs[cwd].join(" "));
-  } else if(parts[0]==="cd"){
-    const dir = parts[1];
-    const newPath = dir===".." ? "/" : (cwd==="/" ? "/"+dir : cwd+"/"+dir);
-    if(fs[newPath]) { cwd=newPath; log("moved to "+cwd); }
-    else log("no such directory");
-  } else if(parts[0]==="cat"){
-    const f = parts[1];
-    if(fs[cwd].includes(f)) log(fileContents[f]||"(empty)");
-    else log("no such file");
-  } else log("command not found");
-}
+// Join
+const joinBtn = document.getElementById("joinBtn");
+const roomInput = document.getElementById("room");
+const joinView = document.getElementById("joinView");
+const gameView = document.getElementById("gameView");
+const err = document.getElementById("err");
+const countEl = document.getElementById("count");
 
-const joinView=document.getElementById("joinView");
-const gameView=document.getElementById("gameView");
-const joinBtn=document.getElementById("joinBtn");
-const roomInput=document.getElementById("room");
-const err=document.getElementById("err");
-const countEl=document.getElementById("count");
-const terminal=document.getElementById("terminal");
-const cmdInput=document.getElementById("cmd");
-const answerBox=document.getElementById("answerBox");
-const answerEl=document.getElementById("answer");
-const sendBtn=document.getElementById("sendBtn");
-const resultsEl=document.getElementById("results");
-
-joinBtn.onclick=()=>{
-  socket.emit("join",{room:roomInput.value.trim()});
-};
-socket.on("errorMsg",(m)=>{err.textContent=m;});
-socket.on("joined",()=>{joinView.style.display="none";gameView.style.display="block"; log("Connected. Waiting for partner...");});
-socket.on("roomUpdate",({count})=>{countEl.textContent=count;});
-socket.on("ready",()=>{ log("Both connected. Start typing commands!"); cmdInput.disabled=false; answerBox.style.display="block";});
-
-cmdInput.addEventListener("keydown",e=>{
-  if(e.key==="Enter"){ log("$ "+cmdInput.value); runCommand(cmdInput.value); cmdInput.value=""; }
+joinBtn.onclick = ()=>{ socket.emit("join",{room:roomInput.value.trim()}); };
+socket.on("errorMsg", m=>err.textContent=m);
+socket.on("joined", ()=>{ joinView.classList.add("hidden"); gameView.classList.remove("hidden"); });
+socket.on("roomUpdate", ({count})=>countEl.textContent=count);
+socket.on("ready", ()=>{
+  document.getElementById("answerBoxTerminal").classList.remove("hidden");
+  document.getElementById("answerBoxMail").classList.remove("hidden");
+  document.getElementById("cmd").disabled=false;
 });
 
-sendBtn.onclick=()=>{socket.emit("answer",answerEl.value.trim()); sendBtn.disabled=true; answerEl.disabled=true;};
-socket.on("results",(pairs)=>{
-  resultsEl.innerHTML=pairs.map(p=>`<div><b>${p.who}</b>: ${p.answer}</div>`).join("");
-  resultsEl.style.display="block";
+// Terminal sandbox
+const fs = { "/":["home","etc","secret.txt"], "/home":["notes.md","tasks.txt"], "/etc":["config.ini"] };
+const fileContents = { "secret.txt":"FLAG{winner_found}", "notes.md":"Groceries list...", "tasks.txt":"Do laundry", "config.ini":"setting=value" };
+let cwd = "/";
+const terminal = document.getElementById("terminal");
+const cmdInput = document.getElementById("cmd");
+const answerTerminal = document.getElementById("answerTerminal");
+const sendBtnTerminal = document.getElementById("sendBtnTerminal");
+const resultsTerminal = document.getElementById("resultsTerminal");
+
+function log(msg){ terminal.innerHTML += msg+"<br>"; terminal.scrollTop = terminal.scrollHeight; }
+function runCommand(cmd){
+  const parts = cmd.trim().split(" ");
+  if(parts[0]==="ls"){ log(fs[cwd].join(" ")); }
+  else if(parts[0]==="cd"){
+    const dir = parts[1]; 
+    const newPath = dir===".." ? "/" : (cwd==="/" ? "/"+dir : cwd+"/"+dir);
+    if(fs[newPath]){ cwd=newPath; log("Moved to "+cwd); } else log("No such directory"); 
+  } else if(parts[0]==="cat"){
+    const f = parts[1]; 
+    if(fs[cwd].includes(f)) log(fileContents[f]||"(empty)"); else log("No such file");
+  } else log("Command not found");
+}
+cmdInput.addEventListener("keydown", e=>{ if(e.key==="Enter"){ log("$ "+cmdInput.value); runCommand(cmdInput.value); cmdInput.value=""; }});
+sendBtnTerminal.onclick = ()=>{ socket.emit("answer", answerTerminal.value.trim()); sendBtnTerminal.disabled=true; answerTerminal.disabled=true; };
+
+// Mail sandbox
+const emails = [
+  {subject:"Team Lunch Tomorrow", body:"Hey team, lunch at noon."},
+  {subject:"Update Your Password", body:"Your account has been compromised. Click: http://fake-link.com"},
+  {subject:"Project Status", body:"Reminder to update your project tracker."}
+];
+const phishingSubject = "Update Your Password";
+const mailList = document.getElementById("mailList");
+const mailContent = document.getElementById("mailContent");
+emails.forEach(m=>{
+  const div = document.createElement("div");
+  div.textContent = m.subject;
+  div.onclick = ()=>{ mailContent.innerHTML=`<h4>${m.subject}</h4><p>${m.body}</p>`; };
+  mailList.appendChild(div);
+});
+const answerMail = document.getElementById("answerMail");
+const sendBtnMail = document.getElementById("sendBtnMail");
+const resultsMail = document.getElementById("resultsMail");
+sendBtnMail.onclick = ()=>{ socket.emit("answer", answerMail.value.trim()); sendBtnMail.disabled=true; answerMail.disabled=true; };
+
+// Results & fastest
+socket.on("firstSubmit", ({fastest})=>{
+  if(!fastest) return;
+  if(fastest === socket.id) { answerTerminal.style.borderColor="yellow"; answerMail.style.borderColor="yellow"; }
+});
+socket.on("results", pairs=>{
+  const render = pairs.map(p=>`<div><b>${p.who}</b>: ${p.answer} ${p.correct?"✅":"❌"} ${p.fastest?"⚡ Fastest":""} | Score: ${p.score}</div>`).join("");
+  resultsTerminal.innerHTML = "<strong>Terminal Results:</strong><br>"+render;
+  resultsMail.innerHTML = "<strong>Mail Results:</strong><br>"+render;
+  resultsTerminal.classList.remove("hidden");
+  resultsMail.classList.remove("hidden");
+
+  sendBtnTerminal.disabled=false; answerTerminal.disabled=false; answerTerminal.value="";
+  sendBtnMail.disabled=false; answerMail.disabled=false; answerMail.value="";
 });
 </script>
 </body>
